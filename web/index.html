@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Logdash — log analysis + anomaly detection</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">LD</div>
+        <div>
+          <h1>Logdash</h1>
+          <div class="sub">Spot spikes, error bursts, and slowdowns — fast.</div>
+        </div>
+      </div>
+      <div class="topbarRight">
+        <div class="chip" id="healthChip" title="API health">API: <span class="chipVal">…</span></div>
+        <div class="pill">FastAPI + Plotly</div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel">
+        <div class="panelHeader">
+          <h2>Analyze</h2>
+          <div class="hint">1) Choose data → 2) Tune → 3) Run</div>
+        </div>
+
+        <form id="analyzeForm" class="form">
+          <div class="group">
+            <div class="groupTitle">Data source</div>
+            <label class="toggleRow">
+              <input id="useSample" type="checkbox" checked />
+              <span class="toggleText">
+                <span class="toggleTitle">Use sample data</span>
+                <span class="toggleSub">Great for verifying the dashboard quickly.</span>
+              </span>
+            </label>
+
+            <label class="field">
+              <span class="label">Upload log file(s)</span>
+              <input id="files" type="file" multiple />
+              <span class="help" id="filesHelp">JSONL, access logs, or timestamped app logs.</span>
+            </label>
+          </div>
+
+          <div class="group">
+            <div class="groupTitle">Aggregation</div>
+            <label class="field">
+              <span class="label">Time bucket</span>
+              <select id="bucket">
+                <option value="1min">1 minute</option>
+                <option value="5min" selected>5 minutes</option>
+                <option value="15min">15 minutes</option>
+                <option value="1H">1 hour</option>
+              </select>
+              <span class="help">Smaller buckets = more detail (and more noise).</span>
+            </label>
+          </div>
+
+          <div class="group">
+            <div class="groupTitle">Anomaly detection</div>
+            <label class="field">
+              <span class="label">Method</span>
+              <select id="method">
+                <option value="isolation_forest" selected>Isolation Forest (recommended)</option>
+                <option value="robust_z">Robust z-score (MAD)</option>
+              </select>
+              <span class="help" id="methodHelp"></span>
+            </label>
+
+            <details class="advanced" open>
+              <summary>Advanced</summary>
+              <div class="advancedBody">
+                <label class="field">
+                  <span class="label">Contamination</span>
+                  <input id="contamination" type="number" min="0.001" max="0.2" step="0.001" value="0.02" />
+                  <span class="help">Expected % of anomalous buckets (e.g. 0.02 ≈ 2%).</span>
+                </label>
+
+                <label class="field">
+                  <span class="label">Z threshold</span>
+                  <input id="zThreshold" type="number" min="2" max="10" step="0.1" value="3.5" />
+                  <span class="help">Higher = fewer flags (3.5 is a common default).</span>
+                </label>
+              </div>
+            </details>
+          </div>
+
+          <div class="actions">
+            <button id="analyzeBtn" class="btn primary" type="submit">Run analysis</button>
+            <button id="resetBtn" class="btn ghost" type="button">Reset</button>
+          </div>
+          <div id="status" class="status" role="status" aria-live="polite"></div>
+        </form>
+
+        <div class="panelFooter">
+          <div class="tiny">Tip: click an anomaly point on the charts to focus it. Settings are saved locally.</div>
+        </div>
+      </aside>
+
+      <section class="content">
+        <section class="card">
+          <div class="cardHead">
+            <h2>Summary</h2>
+            <div class="meta" id="rangeMeta"></div>
+          </div>
+          <div class="kpis" id="kpis"></div>
+        </section>
+
+        <section class="card">
+          <div class="cardHead">
+            <h2>Volume</h2>
+            <div class="meta">Events per bucket</div>
+          </div>
+          <div id="volumeChart" class="chart"></div>
+        </section>
+
+        <section class="card">
+          <div class="cardHead">
+            <h2>Anomaly score</h2>
+            <div class="meta">Higher = more unusual</div>
+          </div>
+          <div id="scoreChart" class="chart"></div>
+        </section>
+
+        <section class="card grid2">
+          <div>
+            <div class="cardHead">
+              <h2>Top paths</h2>
+              <div class="meta">Most frequent</div>
+            </div>
+            <div id="pathsChart" class="chart small"></div>
+          </div>
+          <div>
+            <div class="cardHead">
+              <h2>Top IPs</h2>
+              <div class="meta">Most active clients</div>
+            </div>
+            <div id="ipsChart" class="chart small"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="cardHead">
+            <h2>Anomalous buckets</h2>
+            <div class="meta">Click a row to focus</div>
+          </div>
+          <div class="tableWrap">
+            <table class="table" id="anomsTable"></table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="cardHead">
+            <h2>Raw logs (preview)</h2>
+            <div class="meta">
+              <input id="logFilter" class="search" placeholder="Filter (path/ip/message)…" />
+            </div>
+          </div>
+          <div class="tableWrap">
+            <table class="table" id="logsTable"></table>
+          </div>
+        </section>
+      </section>
+
+      <aside class="panel right">
+        <div class="panelHeader">
+          <h2>Focus</h2>
+          <div class="hint">Click a chart point or anomaly row</div>
+        </div>
+
+        <div id="focusEmpty" class="empty">
+          <div class="emptyTitle">No analysis yet</div>
+          <div class="emptyBody">Run analysis on the left to populate charts and surface anomalies.</div>
+        </div>
+
+        <div id="focusCard" class="focus" hidden>
+          <div class="focusTop">
+            <div>
+              <div class="focusWhen" id="focusWhen">—</div>
+              <div class="focusBadges">
+                <span class="badge" id="focusBucket">Bucket</span>
+                <span class="badge" id="focusFlag">—</span>
+              </div>
+            </div>
+          </div>
+          <div class="focusGrid" id="focusGrid"></div>
+          <div class="tiny">This view reflects aggregated features (volume, errors, latency, uniques).</div>
+        </div>
+
+        <div class="panelFooter">
+          <div class="tiny">If the API chip shows “down”, start with `uvicorn server:app --reload --port 8502`.</div>
+        </div>
+      </aside>
+    </main>
+
+    <div id="loading" class="loading" hidden>
+      <div class="loadingCard">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>
+          <div class="loadingTitle">Analyzing logs…</div>
+          <div class="loadingSub">Parsing → aggregating → scoring anomalies</div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
